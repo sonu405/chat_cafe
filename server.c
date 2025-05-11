@@ -18,25 +18,33 @@
 #define SERVER_PORT "9340"
 
 struct message {
-  int user_id;
-  char *username;
-  char *message;
+  int user_id; // user's fd
+  char username[16];
+  char message[300];
 };
+
+enum client_state { WAITING_FOR_USERNAME, WAITING_FOR_ID, VERIFIED };
 
 struct user {
   int fd;
   int room_id;
-  bool verified; // this simply means he has joined a room
   char username[16];
+  enum client_state state;
 };
 
 struct room {
   int id;
   int num_of_msg;
-  struct message messages[];
+  struct message messages[1000];
 };
 
-struct room rooms[5];
+// temporarily for logic -- initializing it
+struct room rooms[5] = {{
+    -1,
+    0,
+}};
+int room_count;
+
 struct user users[50];
 int user_count = 0;
 
@@ -102,13 +110,11 @@ int main() {
   int activity;
 
   // handling the logic of validation
-  struct user curr_client;
-  curr_client.verified = false;
   for (;;) {
     read_fds = master;
 
     // setting up timeval for printing the usr info every 10 secs
-    struct timeval tv = {10, 0};
+    struct timeval tv = {5, 0};
     if ((activity = select(fd_max + 1, &read_fds, NULL, NULL, &tv)) == -1) {
       perror("select error: ");
       exit(4);
@@ -116,13 +122,14 @@ int main() {
 
     // this is when timeval comes
     if (activity == 0) {
-      // for (int i = 0; i < room.num_of_msg; i++) {
-      //   struct message msg = room.messages[i];
-      //   printf("%s: %s", msg.username, msg.message);
-      // }
       printf("User Count: %d\n", user_count);
       for (int i = 0; i < user_count; i++) {
-        printf("user: %s fd: %d\n", users[i].username, users[i].fd);
+        printf("user: %s, fd: %d, room_id: %d\n", users[i].username,
+               users[i].fd, users[i].room_id);
+      }
+
+      for (int i = 0; i <= rooms[0].num_of_msg; i++) {
+        printf("%s\n", rooms[0].messages[i].message);
       }
       continue;
     }
@@ -145,7 +152,8 @@ int main() {
 
           // for every connection, we make it a user
           if (user_count < 50) { // 50 is max users
-            users[user_count++] = (struct user){new_fd, -1, false, ""};
+            users[user_count++] =
+                (struct user){new_fd, -1, "", WAITING_FOR_USERNAME};
           }
           send(new_fd, "Enter username: ", sizeof("Enter username: "), 0);
           // we can't recv right after send as we're unsure if the client is
@@ -160,7 +168,6 @@ int main() {
           int k;
           for (k = 0; k < user_count; k++) {
             if (users[k].fd == i) {
-              curr_client = users[k];
               break; // due to this, k is the index of the curr client in user
                      // array
             }
@@ -180,15 +187,33 @@ int main() {
             FD_CLR(i, &master);
           } else {
             // validate it if he isn't verified already.
-            if (!curr_client.verified) {
-              // removes new line if present in the buf message (that is
-              // username) from recv
-              buf[strcspn(buf, "\r\n")] = '\0';
+            // removes new line if present in the buf message (that is
+            // username or id) from recv
+            buf[strcspn(buf, "\r\n")] = '\0';
+            switch (users[k].state) {
+            case WAITING_FOR_USERNAME:
+              strcpy(users[k].username, buf);
+              users[k].state = WAITING_FOR_ID;
 
-              strcpy(curr_client.username, buf);
-              curr_client.verified = true;
-              users[k] = curr_client;
-            } else {
+              // prompt for id
+              char prompt[] = "Enter room id: ";
+              send(i, prompt, sizeof(prompt), 0);
+              break;
+            case WAITING_FOR_ID: {
+              unsigned long int room_id;
+              char *badchar;
+
+              room_id = strtol(buf, &badchar, 10);
+              if (*badchar != '\0') {
+                char prompt[] = "incorrect id, Please re-enter: ";
+                send(i, prompt, sizeof(prompt), 0);
+                continue;
+              }
+              users[k].room_id = room_id;
+              users[k].state = VERIFIED;
+              break;
+            }
+            case VERIFIED: {
               // we have already got some data that we must send to everyone
               for (j = 0; j <= fd_max; j++) {
                 if (FD_ISSET(j, &master)) {
@@ -197,20 +222,27 @@ int main() {
                     // send the buffered input that we took from the current
                     // client (target of this loop's recv) and send to all other
                     // clients.
-                    char msg[300];
+                    struct message msg;
+                    strcpy(msg.username, users[k].username);
+                    msg.user_id = users[k].fd;
                     int msg_len;
 
-                    buf[nbytes] = '\0'; // null terminate buf returned from recv
-                    snprintf(msg, sizeof(msg), "%s: %s", curr_client.username,
-                             buf);
+                    // buf[nbytes] = '\0'; // null terminate buf returned from
+                    // recv
+                    snprintf(msg.message, sizeof(msg.message), "%s: %s\n",
+                             users[k].username, buf);
 
-                    msg_len = strlen(msg);
-                    if (send(j, msg, msg_len, 0) == -1) {
+                    msg_len = strlen(msg.message);
+                    rooms[0].messages[rooms[0].num_of_msg++] = msg;
+
+                    if (send(j, msg.message, msg_len, 0) == -1) {
                       perror("send: ");
                     }
                   }
                 }
               }
+              break;
+            }
             }
           }
         }
