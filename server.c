@@ -1,3 +1,4 @@
+// bug: I am not instantly getting the "New Connection Printed!";
 
 #include <netdb.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <stdbool.h>
 #include <sys/select.h>
 
 // int select(int nfds, fd_set *restrict readfds,
@@ -22,7 +24,10 @@ struct message {
 };
 
 struct user {
+  int fd;
   int room_id;
+  bool verified; // this simply means he has joined a room
+  char username[16];
 };
 
 struct room {
@@ -32,6 +37,8 @@ struct room {
 };
 
 struct room rooms[5];
+struct user users[50];
+int user_count = 0;
 
 int main() {
 
@@ -92,27 +99,33 @@ int main() {
   char buf[256];
   int nbytes;
 
-  // setting up timeval for printing the usr info every 10 secs
-  struct timeval tv;
-  tv.tv_sec = 10;
-  tv.tv_usec = 0;
   int activity;
 
+  // handling the logic of validation
+  struct user curr_client;
+  curr_client.verified = false;
   for (;;) {
     read_fds = master;
 
+    // setting up timeval for printing the usr info every 10 secs
+    struct timeval tv = {10, 0};
     if ((activity = select(fd_max + 1, &read_fds, NULL, NULL, &tv)) == -1) {
       perror("select error: ");
       exit(4);
     }
 
-    // if (activity == 0) {
     // this is when timeval comes
-    // for (int i = 0; i < room.num_of_msg; i++) {
-    //   struct message msg = room.messages[i];
-    //   printf("%s: %s", msg.username, msg.message);
-    // }
-    // }
+    if (activity == 0) {
+      // for (int i = 0; i < room.num_of_msg; i++) {
+      //   struct message msg = room.messages[i];
+      //   printf("%s: %s", msg.username, msg.message);
+      // }
+      printf("User Count: %d\n", user_count);
+      for (int i = 0; i < user_count; i++) {
+        printf("user: %s fd: %d\n", users[i].username, users[i].fd);
+      }
+      continue;
+    }
 
     for (i = 0; i <= fd_max; i++) {
       if (FD_ISSET(i, &read_fds)) { // we got one!!
@@ -129,10 +142,33 @@ int main() {
           if (new_fd > fd_max) {
             fd_max = new_fd;
           }
-          printf("New connection...");
+
+          // for every connection, we make it a user
+          if (user_count < 50) { // 50 is max users
+            users[user_count++] = (struct user){new_fd, -1, false, ""};
+          }
+          send(new_fd, "Enter username: ", sizeof("Enter username: "), 0);
+          // we can't recv right after send as we're unsure if the client is
+          // ready to send data.
+
+          printf("New connection...\n");
         } else {
-          // not a listener, must be a client, hungry for data
-          if ((nbytes = recv(i, buf, sizeof buf, 0)) <= 0) {
+          // not a listener, must be a client,
+
+          // flowing block of code puts the client ready in the curr client
+          // struct
+          int k;
+          for (k = 0; k < user_count; k++) {
+            if (users[k].fd == i) {
+              curr_client = users[k];
+              break; // due to this, k is the index of the curr client in user
+                     // array
+            }
+          }
+
+          // Deal with data, recieve or send
+          // -1 leaves space for null termination
+          if ((nbytes = recv(i, buf, sizeof(buf) - 1, 0)) <= 0) {
             if (nbytes == 0) {
               // connection closed
               printf("selectserver: socket %d hung up\n", i);
@@ -143,12 +179,35 @@ int main() {
             close(i);
             FD_CLR(i, &master);
           } else {
-            // we have already got some data that we must send to everyone
-            for (j = 0; j <= fd_max; j++) {
-              if (FD_ISSET(j, &master)) {
-                if (j != listener && j != i) {
-                  if (send(j, buf, nbytes, 0) == -1) {
-                    perror("send: ");
+            // validate it if he isn't verified already.
+            if (!curr_client.verified) {
+              // removes new line if present in the buf message (that is
+              // username) from recv
+              buf[strcspn(buf, "\r\n")] = '\0';
+
+              strcpy(curr_client.username, buf);
+              curr_client.verified = true;
+              users[k] = curr_client;
+            } else {
+              // we have already got some data that we must send to everyone
+              for (j = 0; j <= fd_max; j++) {
+                if (FD_ISSET(j, &master)) {
+                  if (j != listener && j != i) {
+
+                    // send the buffered input that we took from the current
+                    // client (target of this loop's recv) and send to all other
+                    // clients.
+                    char msg[300];
+                    int msg_len;
+
+                    buf[nbytes] = '\0'; // null terminate buf returned from recv
+                    snprintf(msg, sizeof(msg), "%s: %s", curr_client.username,
+                             buf);
+
+                    msg_len = strlen(msg);
+                    if (send(j, msg, msg_len, 0) == -1) {
+                      perror("send: ");
+                    }
                   }
                 }
               }
