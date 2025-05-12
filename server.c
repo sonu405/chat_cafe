@@ -1,5 +1,3 @@
-// bug: I am not instantly getting the "New Connection Printed!";
-
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,10 +8,6 @@
 
 #include <stdbool.h>
 #include <sys/select.h>
-
-// int select(int nfds, fd_set *restrict readfds,
-//     fd_set *restrict writefds, fd_set *restrict errorfds,
-//     struct timeval *restrict timeout);
 
 #define SERVER_PORT "9340"
 
@@ -133,8 +127,9 @@ int main() {
                users[i].fd, users[i].room_id);
       }
 
-      for (int i = 0; i <= rooms[0].num_of_msg; i++) {
-        printf("%s\n", rooms[0].messages[i].message);
+      for (int i = 0; i < room_count; i++) {
+        for (int j = 0; j < rooms[i].num_of_msg; j++)
+          printf("%s\n", rooms[i].messages[j].message);
       }
       continue;
     }
@@ -196,14 +191,15 @@ int main() {
             // username or id) from recv
             buf[strcspn(buf, "\r\n")] = '\0';
             switch (users[k].state) {
-            case WAITING_FOR_USERNAME:
+            case WAITING_FOR_USERNAME: {
               strcpy(users[k].username, buf);
               users[k].state = WAITING_FOR_ID;
 
               // prompt for id
               char prompt[] = "Enter room id: ";
-              send(i, prompt, sizeof(prompt), 0);
+              send(i, prompt, strlen(prompt), 0);
               break;
+            }
             case WAITING_FOR_ID: {
               unsigned long int room_id;
               char *badchar;
@@ -211,7 +207,7 @@ int main() {
               room_id = strtol(buf, &badchar, 10);
               if (*badchar != '\0') {
                 char prompt[] = "incorrect id, Please re-enter: ";
-                send(i, prompt, sizeof(prompt), 0);
+                send(i, prompt, strlen(prompt), 0);
                 continue;
               }
 
@@ -232,7 +228,7 @@ int main() {
 
                 char prompt[] = "Room doesn't exists, would you like to make a "
                                 "new room? (y or n): ";
-                send(i, prompt, sizeof(prompt), 0);
+                send(i, prompt, strlen(prompt), 0);
               }
 
               break;
@@ -241,11 +237,18 @@ int main() {
               if (strcmp(buf, "y") == 0 || strcmp(buf, "ye") == 0 ||
                   strcmp(buf, "yes") == 0) {
                 // make a room
-                rooms[room_count] = (struct room){room_count, 0};
-                users[k].room_id = room_count;
+
                 // note that, i am using room count as the id for the room
                 // later, i'll segregraate this logic. Make sure not to use
                 // room count directly anywhere and always compare with id's
+                rooms[room_count] = (struct room){room_count, 0};
+                users[k].room_id = room_count;
+
+                // send that new room's id to the user
+                char id_prompt[256];
+                sprintf(id_prompt, "[SERVER]: The id of the new room is: %d\n",
+                        room_count);
+                send(i, id_prompt, strlen(id_prompt), 0);
 
                 room_count++;
 
@@ -253,34 +256,41 @@ int main() {
               } else {
                 // prompt for id
                 char prompt[] = "Enter room id: ";
-                send(i, prompt, sizeof(prompt), 0);
+                send(i, prompt, strlen(prompt), 0);
                 users[k].state = WAITING_FOR_ID;
               }
 
               break;
             }
             case VERIFIED: {
-              // we have already got some data that we must send to everyone
+              // we have already got some data that we must now deal with
+
+              struct message msg;
+              strcpy(msg.username, users[k].username);
+              msg.user_id = users[k].fd;
+              int msg_len;
+
+              // TODO: REMOVE THIS \n at THE END AS IT CREATES PROBLEMS IN
+              // STORING MSG
+              snprintf(msg.message, sizeof(msg.message), "%s: %s\n",
+                       users[k].username, buf);
+
+              msg_len = strlen(msg.message);
+
+              int room_index; // find the index of the room in which user
+                              // exists in rooms
+              for (int i = 0; i < room_count; i++) {
+                if (users[k].room_id == rooms[i].id) {
+                  room_index = i;
+                  break;
+                }
+              }
+              rooms[room_index].messages[rooms[room_index].num_of_msg++] = msg;
+
+              // sending data to everyone
               for (j = 0; j <= fd_max; j++) {
                 if (FD_ISSET(j, &master)) {
                   if (j != listener && j != i) {
-
-                    // send the buffered input that we took from the current
-                    // client (target of this loop's recv) and send to all other
-                    // clients.
-                    struct message msg;
-                    strcpy(msg.username, users[k].username);
-                    msg.user_id = users[k].fd;
-                    int msg_len;
-
-                    // buf[nbytes] = '\0'; // null terminate buf returned from
-                    // recv
-                    snprintf(msg.message, sizeof(msg.message), "%s: %s\n",
-                             users[k].username, buf);
-
-                    msg_len = strlen(msg.message);
-                    rooms[0].messages[rooms[0].num_of_msg++] = msg;
-
                     if (send(j, msg.message, msg_len, 0) == -1) {
                       perror("send: ");
                     }
