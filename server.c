@@ -268,8 +268,14 @@ int main() {
               break;
             }
             case VERIFIED: {
-              // we have already got some data that we must now deal with
+              // note that this is only when app working in cmd and we want to
+              // remove the entered message.
 
+              // ANSI escape: move cursor up and clear the line
+              char *clear_line = "\033[A\33[2K\r";
+              send(i, clear_line, strlen(clear_line), 0);
+
+              // we have already got some data that we must now deal with
               struct message msg;
               strcpy(msg.username, users[k].username);
               msg.user_id = users[k].fd;
@@ -292,16 +298,6 @@ int main() {
               }
               rooms[room_index].messages[rooms[room_index].num_of_msg++] = msg;
 
-              // sending data to everyone
-              // for (j = 0; j <= fd_max; j++) {
-              //   if (FD_ISSET(j, &master)) {
-              //     if (j != listener && j != i) {
-              //       if (send(j, msg.message, msg_len, 0) == -1) {
-              //         perror("send: ");
-              //       }
-              //     }
-              //   }
-              // }
               break;
             }
             }
