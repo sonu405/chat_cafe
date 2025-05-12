@@ -23,7 +23,12 @@ struct message {
   char message[300];
 };
 
-enum client_state { WAITING_FOR_USERNAME, WAITING_FOR_ID, VERIFIED };
+enum client_state {
+  WAITING_FOR_USERNAME,
+  WAITING_FOR_ID,
+  WAITING_FOR_ROOM,
+  VERIFIED
+};
 
 struct user {
   int fd;
@@ -39,11 +44,11 @@ struct room {
 };
 
 // temporarily for logic -- initializing it
-struct room rooms[5] = {{
+struct room rooms[10] = {{
     -1,
     0,
 }};
-int room_count;
+int room_count = 1; // FIX THIS TO 0 and REMOVE THAT TEMPORARY initializing
 
 struct user users[50];
 int user_count = 0;
@@ -173,7 +178,7 @@ int main() {
             }
           }
 
-          // Deal with data, recieve or send
+          // Deal with data, receive or send
           // -1 leaves space for null termination
           if ((nbytes = recv(i, buf, sizeof(buf) - 1, 0)) <= 0) {
             if (nbytes == 0) {
@@ -209,8 +214,49 @@ int main() {
                 send(i, prompt, sizeof(prompt), 0);
                 continue;
               }
-              users[k].room_id = room_id;
-              users[k].state = VERIFIED;
+
+              bool room_exists = false;
+              // check if the id exists
+              for (int i = 0; i < room_count; i++) {
+                if (rooms[i].id == room_id) {
+                  room_exists = true;
+                  break;
+                }
+              }
+
+              if (room_exists) {
+                users[k].room_id = room_id;
+                users[k].state = VERIFIED;
+              } else {
+                users[k].state = WAITING_FOR_ROOM;
+
+                char prompt[] = "Room doesn't exists, would you like to make a "
+                                "new room? (y or n): ";
+                send(i, prompt, sizeof(prompt), 0);
+              }
+
+              break;
+            }
+            case WAITING_FOR_ROOM: {
+              if (strcmp(buf, "y") == 0 || strcmp(buf, "ye") == 0 ||
+                  strcmp(buf, "yes") == 0) {
+                // make a room
+                rooms[room_count] = (struct room){room_count, 0};
+                users[k].room_id = room_count;
+                // note that, i am using room count as the id for the room
+                // later, i'll segregraate this logic. Make sure not to use
+                // room count directly anywhere and always compare with id's
+
+                room_count++;
+
+                users[k].state = VERIFIED;
+              } else {
+                // prompt for id
+                char prompt[] = "Enter room id: ";
+                send(i, prompt, sizeof(prompt), 0);
+                users[k].state = WAITING_FOR_ID;
+              }
+
               break;
             }
             case VERIFIED: {
