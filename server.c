@@ -28,6 +28,8 @@ struct user {
   int fd;
   int room_id;
   char username[16];
+  int last_send; // index of the last message send to this user from the room's
+                 // array of messages
   enum client_state state;
 };
 
@@ -49,10 +51,11 @@ int user_count = 0;
 
 int main() {
 
-  fd_set master, read_fds;
+  fd_set master, read_fds, write_fds;
   int fd_max;
   FD_ZERO(&master);
   FD_ZERO(&read_fds);
+  FD_ZERO(&write_fds);
 
   struct addrinfo hints, *ai, *p;
   int rv, yes = 1, listener;
@@ -111,10 +114,12 @@ int main() {
   // handling the logic of validation
   for (;;) {
     read_fds = master;
+    write_fds = master;
 
     // setting up timeval for printing the usr info every 10 secs
     struct timeval tv = {5, 0};
-    if ((activity = select(fd_max + 1, &read_fds, NULL, NULL, &tv)) == -1) {
+    if ((activity = select(fd_max + 1, &read_fds, &write_fds, NULL, &tv)) ==
+        -1) {
       perror("select error: ");
       exit(4);
     }
@@ -135,7 +140,7 @@ int main() {
     }
 
     for (i = 0; i <= fd_max; i++) {
-      if (FD_ISSET(i, &read_fds)) { // we got one!!
+      if (FD_ISSET(i, &read_fds)) { // we got one to read!!
         if (i == listener) {
           // listener is ready means a new connection
           addr_len = sizeof remote_addr;
@@ -153,7 +158,7 @@ int main() {
           // for every connection, we make it a user
           if (user_count < 50) { // 50 is max users
             users[user_count++] =
-                (struct user){new_fd, -1, "", WAITING_FOR_USERNAME};
+                (struct user){new_fd, -1, "", 0, WAITING_FOR_USERNAME};
           }
           send(new_fd, "Enter username: ", sizeof("Enter username: "), 0);
           // we can't recv right after send as we're unsure if the client is
@@ -163,7 +168,7 @@ int main() {
         } else {
           // not a listener, must be a client,
 
-          // flowing block of code puts the client ready in the curr client
+          // following block of code puts the client ready in the curr client
           // struct
           int k;
           for (k = 0; k < user_count; k++) {
@@ -272,7 +277,7 @@ int main() {
 
               // TODO: REMOVE THIS \n at THE END AS IT CREATES PROBLEMS IN
               // STORING MSG
-              snprintf(msg.message, sizeof(msg.message), "%s: %s\n",
+              snprintf(msg.message, sizeof(msg.message), "%s: %s",
                        users[k].username, buf);
 
               msg_len = strlen(msg.message);
@@ -288,18 +293,54 @@ int main() {
               rooms[room_index].messages[rooms[room_index].num_of_msg++] = msg;
 
               // sending data to everyone
-              for (j = 0; j <= fd_max; j++) {
-                if (FD_ISSET(j, &master)) {
-                  if (j != listener && j != i) {
-                    if (send(j, msg.message, msg_len, 0) == -1) {
-                      perror("send: ");
-                    }
-                  }
-                }
-              }
+              // for (j = 0; j <= fd_max; j++) {
+              //   if (FD_ISSET(j, &master)) {
+              //     if (j != listener && j != i) {
+              //       if (send(j, msg.message, msg_len, 0) == -1) {
+              //         perror("send: ");
+              //       }
+              //     }
+              //   }
+              // }
               break;
             }
             }
+          }
+        }
+      } // if (fdisset -> readfds)
+      else if (FD_ISSET(i, &write_fds)) {
+        // means some client
+        if (i != listener) {
+
+          int k, room_index, num_of_msg; // num_of_msg in the room of user
+
+          // this find index of the user.
+          for (k = 0; k < user_count; k++) {
+            if (users[k].fd == i) {
+              break;
+            }
+          }
+
+          for (int i = 0; i < room_count; i++) {
+            if (users[k].room_id == rooms[i].id) {
+              num_of_msg = rooms[i].num_of_msg;
+              room_index = i;
+              break;
+            }
+          }
+
+          if (users[k].last_send < num_of_msg) {
+            char msgs_buf[10000];
+            int l;
+
+            msgs_buf[0] = '\0';
+            for (l = users[k].last_send; l < num_of_msg; l++) {
+              strcat(msgs_buf, rooms[room_index].messages[l].message);
+              strcat(msgs_buf, "\n");
+            }
+            users[k].last_send = l;
+
+            send(i, msgs_buf, strlen(msgs_buf), 0);
           }
         }
       }
